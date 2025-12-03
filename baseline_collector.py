@@ -13,6 +13,15 @@ from collections import defaultdict
 import os
 from pynput import keyboard
 
+import os
+
+# Add display debugging
+if platform.system() == "Linux":
+    DISPLAY = os.environ.get('DISPLAY', 'Not set')
+    if DISPLAY == 'Not set':
+        print("[WARNING] No X11 display detected!")
+        print("[TIP] Run with: xvfb-run -a python master_system.py")
+
 class CrossPlatformBaselineCollector:
     def __init__(self, output_file="baseline_data.json"):
         self.output_file = output_file

