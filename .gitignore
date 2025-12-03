@@ -1,0 +1,4 @@
+visualization_output/
+.logEnv/
+research_results/
+detector_model.plk
