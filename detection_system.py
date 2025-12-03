@@ -162,61 +162,85 @@ class KeyloggerDetector:
         
         return X_train
     
-    def detect_from_file(self, keylogger_file):
-        """Detect keylogger from logged data file"""
-        print(f"\nAnalyzing: {keylogger_file}")
-        
-        with open(keylogger_file, 'r') as f:
-            data = json.load(f)
-        
-        metrics = data.get('system_metrics', [])
-        
-        if not metrics:
-            print("No metrics found in file")
+    def detect_from_file(self, file_path):
+        """Detect if a file contains keylogger data"""
+        try:
+            with open(file_path, 'r') as f:
+                data = json.load(f)
+        except Exception as e:
+            print(f"Error reading file: {e}")
             return None
         
-        # Debug: print available columns
-        if metrics:
-            print(f"Available columns: {list(metrics[0].keys())}")
-            print(f"Total metrics collected: {len(metrics)}")  # ADD THIS
-            print(f"Keystrokes: {data.get('keystroke_count', 0)}")  # ADD THIS
+        # Check if model is trained
+        if self.model is None or self.scaler is None:
+            print(f"[WARNING] Model not trained yet. Training now...")
+            # Try to train with baseline data
+            try:
+                baseline_file = "baseline_data.json"
+                if os.path.exists(baseline_file):
+                    self.train_model(baseline_file, contamination=0.1)
+                else:
+                    print("[ERROR] Cannot detect without trained model. Run Phase 7 first.")
+                    return {
+                        "file": file_path,
+                        "is_keylogger": None,
+                        "error": "Model not trained"
+                    }
+            except Exception as e:
+                print(f"[ERROR] Failed to train model: {e}")
+                return {
+                    "file": file_path,
+                    "is_keylogger": None,
+                    "error": str(e)
+                }
         
-        # Extract features
-        features = self.extract_features(metrics)
+        # Extract features from metrics
+        if "system_metrics" not in data or len(data["system_metrics"]) == 0:
+            print(f"[WARNING] No metrics in file: {file_path}")
+            return {
+                "file": file_path,
+                "is_keylogger": False,
+                "reason": "No system metrics collected"
+            }
         
-        if not features:
-            print("Could not extract features")
-            return None
+        try:
+            features = self.extract_features(data["system_metrics"])
+            
+            # Convert to 2D array for sklearn
+            X_test = np.array([features])
+            
+            # Scale the features
+            X_test_scaled = self.scaler.transform(X_test)
+            
+            # Make prediction
+            prediction = self.model.predict(X_test_scaled)[0]
+            anomaly_score = self.model.score_samples(X_test_scaled)[0]
+            
+            # Check rule-based violations
+            rule_violations = self.check_rule_violations(data["system_metrics"])
+            
+            # Determine if keylogger
+            is_keylogger = (prediction == -1) or (len(rule_violations) >= 2)
+            
+            result = {
+                "file": file_path,
+                "is_keylogger": is_keylogger,
+                "ml_prediction": "ANOMALY" if prediction == -1 else "NORMAL",
+                "anomaly_score": float(anomaly_score),
+                "rule_violations": rule_violations,
+                "keystrokes_count": len(data.get("keystrokes", [])),
+                "metrics_count": len(data.get("system_metrics", []))
+            }
+            
+            return result
         
-        # Convert to DataFrame
-        X_test = pd.DataFrame([features])
-        
-        # Normalize
-        X_test_scaled = self.scaler.transform(X_test)
-        
-        # Predict
-        prediction = self.model.predict(X_test_scaled)[0]
-        anomaly_score = self.model.score_samples(X_test_scaled)[0]
-        
-        # Rule-based detection
-        rule_violations = self._check_rules(features)
-        
-        # FIX: Change detection logic - keyloggers SHOULD have anomalies
-        # Negative anomaly score = ANOMALY, Positive = NORMAL
-        is_keylogger = prediction == -1 or len(rule_violations) >= 2  # CHANGED from >= 3
-        
-        result = {
-            'file': keylogger_file,
-            'is_keylogger': is_keylogger,
-            'ml_prediction': 'ANOMALY' if prediction == -1 else 'NORMAL',
-            'anomaly_score': float(anomaly_score),
-            'rule_violations': rule_violations,
-            'features': features
-        }
-        
-        self._print_detection_result(result)
-        
-        return result
+        except Exception as e:
+            print(f"[ERROR] Detection failed: {e}")
+            return {
+                "file": file_path,
+                "is_keylogger": None,
+                "error": str(e)
+            }
     
     def _check_rules(self, features):
         """Rule-based detection for known patterns"""
