@@ -2,7 +2,7 @@
 Behavioral Keylogger Detection System
 Uses anomaly detection to identify keylogger behavior patterns
 """
-
+import os
 import json
 import numpy as np
 import pandas as pd
@@ -43,35 +43,59 @@ class KeyloggerDetector:
     
     def extract_features(self, metrics_list):
         """Extract features from metrics for detection"""
-        if not metrics_list:
+        if not metrics_list or len(metrics_list) == 0:
             return None
         
-        df = pd.DataFrame(metrics_list)
+        try:
+            df = pd.DataFrame(metrics_list)
+            
+            # Ensure all required columns exist
+            required_cols = {
+                'cpu_percent': 0.0,
+                'memory_mb': 0.0,
+                'threads': 3.0,
+                'handles': 0.0
+            }
+            
+            for col, default_val in required_cols.items():
+                if col not in df.columns:
+                    df[col] = default_val
+            
+            # Calculate features with type conversion
+            features = {
+                # CPU metrics
+                'cpu_mean': float(df['cpu_percent'].mean()) if len(df) > 0 else 0.0,
+                'cpu_std': float(df['cpu_percent'].std()) if len(df) > 1 else 0.0,
+                'cpu_max': float(df['cpu_percent'].max()) if len(df) > 0 else 0.0,
+                'cpu_min': float(df['cpu_percent'].min()) if len(df) > 0 else 0.0,
+                
+                # Memory metrics
+                'memory_mean': float(df['memory_mb'].mean()) if len(df) > 0 else 0.0,
+                'memory_std': float(df['memory_mb'].std()) if len(df) > 1 else 0.0,
+                'memory_max': float(df['memory_mb'].max()) if len(df) > 0 else 0.0,
+                'memory_min': float(df['memory_mb'].min()) if len(df) > 0 else 0.0,
+                'memory_growth': float(df['memory_mb'].max() - df['memory_mb'].min()) if len(df) > 0 else 0.0,
+                
+                # Thread metrics
+                'threads_mean': float(df['threads'].mean()) if len(df) > 0 else 0.0,
+                'threads_std': float(df['threads'].std()) if len(df) > 1 else 0.0,
+                'threads_max': float(df['threads'].max()) if len(df) > 0 else 0.0,
+                
+                # Handle metrics
+                'handles_mean': float(df['handles'].mean()) if len(df) > 0 else 0.0,
+                'handles_std': float(df['handles'].std()) if len(df) > 1 else 0.0,
+            }
+            
+            # Replace any NaN or inf values
+            for key in features:
+                if pd.isna(features[key]) or np.isinf(features[key]):
+                    features[key] = 0.0
+            
+            return features
         
-        # Calculate features with safe column access - match actual column names
-        features = {
-            # CPU metrics
-            'cpu_mean': df['cpu_percent'].mean() if 'cpu_percent' in df.columns else 0,
-            'cpu_std': df['cpu_percent'].std() if 'cpu_percent' in df.columns else 0,
-            'cpu_max': df['cpu_percent'].max() if 'cpu_percent' in df.columns else 0,
-            
-            # Memory metrics
-            'memory_mean': df['memory_mb'].mean() if 'memory_mb' in df.columns else 0,
-            'memory_std': df['memory_mb'].std() if 'memory_mb' in df.columns else 0,
-            'memory_growth': (df['memory_mb'].iloc[-1] - df['memory_mb'].iloc[0]) if ('memory_mb' in df.columns and len(df) > 1) else 0,
-            
-            # Thread metrics
-            'threads_mean': df['threads'].mean() if 'threads' in df.columns else 0,
-            'threads_std': df['threads'].std() if 'threads' in df.columns else 0,
-            'threads_max': df['threads'].max() if 'threads' in df.columns else 0,
-            
-            # Handle metrics
-            'handles_mean': df['handles'].mean() if 'handles' in df.columns else 0,
-            'handles_std': df['handles'].std() if 'handles' in df.columns else 0,
-            'handles_max': df['handles'].max() if 'handles' in df.columns else 0,
-        }
-        
-        return features
+        except Exception as e:
+            print(f"[WARNING] Error extracting features: {e}")
+            return None
     
     def _check_rules(self, features):
         """Rule-based detection for known patterns"""
@@ -98,149 +122,147 @@ class KeyloggerDetector:
         
         return violations
     
-    def train_model(self, contamination=0.1):
+    def train_model(self, baseline_file="baseline_data.json", contamination=0.1):
         """Train anomaly detection model on baseline data"""
-        print("\nTraining detection model...")
+        print("Loading baseline data...")
         
-        # Load baseline data
-        baseline_df = self.load_baseline()
+        try:
+            with open(baseline_file, 'r') as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            print(f"[ERROR] Baseline file not found: {baseline_file}")
+            return
         
-        if baseline_df is None or len(baseline_df) == 0:
-            print("❌ No baseline data available for training")
-            return None
+        metrics = data.get('metrics', [])
         
-        print(f"Baseline data shape: {baseline_df.shape}")
+        if len(metrics) < 10:
+            print(f"⚠️  WARNING: Very few samples ({len(metrics)}). Minimum recommended: 50+")
+            # Continue anyway with available data
         
-        # Split into windows for feature extraction
-        window_size = 10
-        features_list = []
+        df = pd.DataFrame(metrics)
         
-        for i in range(0, len(baseline_df), window_size):
-            window = baseline_df.iloc[i:i+window_size]
-            if len(window) >= 5:
+        print(f"Loaded {len(df)} baseline samples")
+        
+        # Extract features using sliding windows
+        feature_list = []
+        window_size = max(5, len(df) // 3)  # Adaptive window size
+        
+        for i in range(0, len(df), max(1, window_size // 2)):  # 50% overlap
+            window = df.iloc[i:i+window_size]
+            if len(window) >= 3:  # Minimum window size
                 features = self.extract_features(window.to_dict('records'))
                 if features:
-                    features_list.append(features)
+                    feature_list.append(features)
         
-        print(f"Extracted {len(features_list)} feature windows")
+        if not feature_list:
+            print("[ERROR] Could not extract features from baseline")
+            return
         
-        if len(features_list) < 10:
-            print("⚠️  WARNING: Very few feature windows. Increase baseline duration!")
-            return None
+        # Convert feature list to DataFrame then to numpy array
+        features_df = pd.DataFrame(feature_list)
         
-        # Convert to DataFrame
-        X_train = pd.DataFrame(features_list)
+        # Fill any NaN values with 0
+        features_df = features_df.fillna(0)
         
-        print(f"Training features shape: {X_train.shape}")
-        print(f"Features: {list(X_train.columns)}")
+        X = features_df.values  # Convert to numpy array
         
-        # Calculate baseline statistics BEFORE scaling
-        self.baseline_stats = {
-            col: {
-                'mean': X_train[col].mean(),
-                'std': X_train[col].std(),
-                'min': X_train[col].min(),
-                'max': X_train[col].max()
-            }
-            for col in X_train.columns
-        }
+        print(f"Extracted {len(X)} feature vectors")
         
-        # Initialize and fit StandardScaler
-        self.scaler = StandardScaler()
-        X_train_scaled = self.scaler.fit_transform(X_train)
+        # Fit scaler
+        self.scaler.fit(X)
+        X_scaled = self.scaler.transform(X)
         
         # Train Isolation Forest
-        self.model = IsolationForest(
-            contamination=contamination,
-            random_state=42,
-            n_estimators=150
-        )
-        self.model.fit(X_train_scaled)
+        self.model = IsolationForest(contamination=min(contamination, 0.5), random_state=42)
+        self.model.fit(X_scaled)
         
-        print(f"✓ Model trained successfully on {len(X_train)} feature windows")
-        print(f"✓ Contamination parameter: {contamination}")
+        # Store baseline stats for rule-based detection
+        self.baseline_stats = {
+            'cpu_mean': {
+                'mean': df['cpu_percent'].mean() if 'cpu_percent' in df.columns else 0,
+                'std': df['cpu_percent'].std() if 'cpu_percent' in df.columns else 1
+            },
+            'memory_mean': {
+                'mean': df['memory_mb'].mean() if 'memory_mb' in df.columns else 0,
+                'std': df['memory_mb'].std() if 'memory_mb' in df.columns else 1
+            },
+            'threads_mean': {
+                'mean': df['threads'].mean() if 'threads' in df.columns else 3,
+                'std': df['threads'].std() if 'threads' in df.columns else 0.5
+            }
+        }
         
-        return X_train
-    
+        print("✓ Model trained successfully")
+
+        
     def detect_from_file(self, file_path):
         """Detect if a file contains keylogger data"""
+        print(f"\nAnalyzing: {file_path}")
+        
         try:
             with open(file_path, 'r') as f:
                 data = json.load(f)
         except Exception as e:
-            print(f"Error reading file: {e}")
+            print(f"[ERROR] Failed to load file: {e}")
             return None
         
-        # Check if model is trained
-        if self.model is None or self.scaler is None:
-            print(f"[WARNING] Model not trained yet. Training now...")
-            # Try to train with baseline data
-            try:
-                baseline_file = "baseline_data.json"
-                if os.path.exists(baseline_file):
-                    self.train_model(baseline_file, contamination=0.1)
-                else:
-                    print("[ERROR] Cannot detect without trained model. Run Phase 7 first.")
-                    return {
-                        "file": file_path,
-                        "is_keylogger": None,
-                        "error": "Model not trained"
-                    }
-            except Exception as e:
-                print(f"[ERROR] Failed to train model: {e}")
-                return {
-                    "file": file_path,
-                    "is_keylogger": None,
-                    "error": str(e)
-                }
-        
-        # Extract features from metrics
-        if "system_metrics" not in data or len(data["system_metrics"]) == 0:
-            print(f"[WARNING] No metrics in file: {file_path}")
-            return {
-                "file": file_path,
-                "is_keylogger": False,
-                "reason": "No system metrics collected"
-            }
-        
         try:
-            features = self.extract_features(data["system_metrics"])
+            # Get metrics from the file
+            metrics = data.get('system_metrics', [])
+            keystrokes = data.get('keystrokes', [])
             
-            # Convert to 2D array for sklearn
-            X_test = np.array([features])
+            if not metrics:
+                print(f"[WARNING] No system metrics found in {file_path}")
+                return None
             
-            # Scale the features
-            X_test_scaled = self.scaler.transform(X_test)
+            # Convert metrics to DataFrame
+            df_metrics = pd.DataFrame(metrics)
+            
+            # Extract features from metrics
+            features = self.extract_features(df_metrics.to_dict('records'))
+            
+            if not features:
+                print(f"[ERROR] Could not extract features from {file_path}")
+                return None
+            
+            # Ensure all feature values are numeric
+            features = {k: float(v) if v is not None else 0.0 for k, v in features.items()}
+            
+            # Check if model is trained
+            if self.model is None:
+                print("[WARNING] Model not trained yet. Training now...")
+                self.train_model()
             
             # Make prediction
+            X_test = pd.DataFrame([features])
+            X_test_scaled = self.scaler.transform(X_test)
             prediction = self.model.predict(X_test_scaled)[0]
             anomaly_score = self.model.score_samples(X_test_scaled)[0]
             
-            # Check rule-based violations
-            rule_violations = self.check_rule_violations(data["system_metrics"])
+            # Check rule violations
+            rule_violations = self._check_rules(features)
             
             # Determine if keylogger
             is_keylogger = (prediction == -1) or (len(rule_violations) >= 2)
             
             result = {
-                "file": file_path,
-                "is_keylogger": is_keylogger,
-                "ml_prediction": "ANOMALY" if prediction == -1 else "NORMAL",
-                "anomaly_score": float(anomaly_score),
-                "rule_violations": rule_violations,
-                "keystrokes_count": len(data.get("keystrokes", [])),
-                "metrics_count": len(data.get("system_metrics", []))
+                'file': file_path,
+                'is_keylogger': is_keylogger,
+                'ml_prediction': 'ANOMALY' if prediction == -1 else 'NORMAL',
+                'anomaly_score': float(anomaly_score),
+                'rule_violations': rule_violations,
+                'keystroke_count': len([k for k in keystrokes if isinstance(k, dict) and 'timestamp' in k]),
+                'features': features
             }
             
+            self._print_detection_result(result)
             return result
         
         except Exception as e:
             print(f"[ERROR] Detection failed: {e}")
-            return {
-                "file": file_path,
-                "is_keylogger": None,
-                "error": str(e)
-            }
+            import traceback
+            traceback.print_exc()
+            return None
     
     def _check_rules(self, features):
         """Rule-based detection for known patterns"""
@@ -290,6 +312,11 @@ class KeyloggerDetector:
         print(f"Check interval: {check_interval} seconds")
         print("Monitoring started...\n")
         
+        # Ensure model and scaler are trained
+        if self.model is None or not hasattr(self.scaler, 'mean_'):
+            print("[INFO] Model or scaler not fitted. Training now...")
+            self.train_model()
+        
         self.is_monitoring = True
         start_time = time.time()
         metrics_buffer = []
@@ -303,41 +330,40 @@ class KeyloggerDetector:
                         "timestamp": time.time(),
                         "cpu_percent": current_process.cpu_percent(interval=0.5),
                         "memory_mb": current_process.memory_info().rss / (1024 * 1024),
-                        "num_threads": current_process.num_threads(),
-                        "num_handles": current_process.num_handles() if hasattr(current_process, 'num_handles') else 0,
-                        "io_counters": {
-                            "read_bytes": current_process.io_counters().read_bytes,
-                            "write_bytes": current_process.io_counters().write_bytes,
-                            "read_count": current_process.io_counters().read_count,
-                            "write_count": current_process.io_counters().write_count
-                        },
-                        "open_files": len(current_process.open_files()),
-                        "connections": len(current_process.connections()),
-                        "keystroke_count": 0  # Would need keyboard hook to get actual count
+                        "threads": current_process.num_threads(),
+                        "handles": current_process.num_handles() if hasattr(current_process, 'num_handles') else 0,
                     }
                     metrics_buffer.append(metrics)
                 except Exception as e:
-                    print(f"Error collecting metrics: {e}")
+                    pass
                 
                 # Check if we have enough data to analyze
                 if len(metrics_buffer) >= 10:
                     features = self.extract_features(metrics_buffer[-30:])  # Use last 30 samples
                     
                     if features:
-                        # Check for anomalies
-                        X_test = pd.DataFrame([features])
-                        X_test_scaled = self.scaler.transform(X_test)
-                        prediction = self.model.predict(X_test_scaled)[0]
-                        rule_violations = self._check_rules(features)
-                        
-                        if prediction == -1 or len(rule_violations) >= 2:
-                            alert = {
-                                'timestamp': datetime.now().isoformat(),
-                                'prediction': 'ANOMALY',
-                                'violations': rule_violations,
-                                'features': features
-                            }
-                            self._trigger_alert(alert)
+                        try:
+                            # Ensure all feature values are numeric
+                            features = {k: float(v) if v is not None else 0.0 for k, v in features.items()}
+                            
+                            # Convert to 2D array for sklearn
+                            X_test = pd.DataFrame([features])
+                            X_test_scaled = self.scaler.transform(X_test)
+                            prediction = self.model.predict(X_test_scaled)[0]
+                            anomaly_score = self.model.score_samples(X_test_scaled)[0]
+                            rule_violations = self._check_rules(features)
+                            
+                            if prediction == -1 or len(rule_violations) >= 2:
+                                alert = {
+                                    'timestamp': datetime.now().isoformat(),
+                                    'prediction': 'ANOMALY',
+                                    'anomaly_score': float(anomaly_score),
+                                    'violations': rule_violations,
+                                    'features': features
+                                }
+                                self._trigger_alert(alert)
+                        except Exception as e:
+                            pass
                 
                 time.sleep(check_interval)
         
@@ -346,11 +372,13 @@ class KeyloggerDetector:
         finally:
             self.is_monitoring = False
             print("\nMonitoring completed")
-    
+
     def _trigger_alert(self, alert):
         """Trigger detection alert"""
         print(f"\n🚨 ALERT: Suspicious behavior detected at {alert['timestamp']}")
-        print(f"Violations: {', '.join(alert['violations'])}")
+        print(f"Anomaly Score: {alert['anomaly_score']:.4f}")
+        if alert['violations']:
+            print(f"Violations: {', '.join(alert['violations'])}")
         
         if self.alert_callback:
             self.alert_callback(alert)
@@ -360,12 +388,13 @@ class KeyloggerDetector:
         self.is_monitoring = False
     
     def evaluate_performance(self, keylogger_files, normal_files=None):
-        """Evaluate detector performance"""
+        """Evaluate detector performance with visualizations"""
         print("\n" + "="*70)
         print("PERFORMANCE EVALUATION")
         print("="*70)
         
         results = []
+        detection_results = []  # For visualizations
         
         # Test on keylogger files
         print("\nTesting keylogger samples...")
@@ -375,8 +404,9 @@ class KeyloggerDetector:
                 results.append({
                     'file': kf,
                     'actual': 1,  # Keylogger
-                    'predicted': 1 if result['is_keylogger'] else 0
+                    'predicted': 1 if result.get('is_keylogger') else 0
                 })
+                detection_results.append(result)
         
         # Test on normal files if provided
         if normal_files:
@@ -387,8 +417,9 @@ class KeyloggerDetector:
                     results.append({
                         'file': nf,
                         'actual': 0,  # Normal
-                        'predicted': 1 if result['is_keylogger'] else 0
+                        'predicted': 1 if result.get('is_keylogger') else 0
                     })
+                    detection_results.append(result)
         
         # Calculate metrics
         if results:
@@ -411,83 +442,19 @@ class KeyloggerDetector:
             print(f"False Negatives: {sum((df_results['actual'] == 1) & (df_results['predicted'] == 0))}")
             print("="*70)
             
-            return {
+            metrics_data = {
                 'accuracy': accuracy,
                 'precision': precision,
                 'recall': recall,
                 'f1': f1,
                 'results': results
             }
-        
-        return None
-    
-    def evaluate_performance(self, keylogger_files, normal_files=None):
-            """Evaluate detector performance with visualizations"""
+            
+            # Generate visualizations
             print("\n" + "="*70)
-            print("PERFORMANCE EVALUATION")
+            print("GENERATING VISUALIZATIONS")
             print("="*70)
-            
-            results = []
-            detection_results = []  # For visualizations
-            
-            # Test on keylogger files
-            print("\nTesting keylogger samples...")
-            for kf in keylogger_files:
-                result = self.detect_from_file(kf)
-                if result:
-                    results.append({
-                        'file': kf,
-                        'actual': 1,  # Keylogger
-                        'predicted': 1 if result['is_keylogger'] else 0
-                    })
-                    detection_results.append(result)
-            
-            # Test on normal files if provided
-            if normal_files:
-                print("\nTesting normal samples...")
-                for nf in normal_files:
-                    result = self.detect_from_file(nf)
-                    if result:
-                        results.append({
-                            'file': nf,
-                            'actual': 0,  # Normal
-                            'predicted': 1 if result['is_keylogger'] else 0
-                        })
-                        detection_results.append(result)
-            
-            # Calculate metrics
-            if results:
-                df_results = pd.DataFrame(results)
-                accuracy = accuracy_score(df_results['actual'], df_results['predicted'])
-                precision = precision_score(df_results['actual'], df_results['predicted'], zero_division=0)
-                recall = recall_score(df_results['actual'], df_results['predicted'], zero_division=0)
-                f1 = f1_score(df_results['actual'], df_results['predicted'], zero_division=0)
-                
-                print("\n" + "="*70)
-                print("PERFORMANCE METRICS")
-                print("="*70)
-                print(f"Accuracy:  {accuracy*100:.2f}%")
-                print(f"Precision: {precision*100:.2f}%")
-                print(f"Recall:    {recall*100:.2f}%")
-                print(f"F1 Score:  {f1*100:.2f}%")
-                print(f"\nTrue Positives:  {sum((df_results['actual'] == 1) & (df_results['predicted'] == 1))}")
-                print(f"False Positives: {sum((df_results['actual'] == 0) & (df_results['predicted'] == 1))}")
-                print(f"True Negatives:  {sum((df_results['actual'] == 0) & (df_results['predicted'] == 0))}")
-                print(f"False Negatives: {sum((df_results['actual'] == 1) & (df_results['predicted'] == 0))}")
-                print("="*70)
-                
-                metrics_data = {
-                    'accuracy': accuracy,
-                    'precision': precision,
-                    'recall': recall,
-                    'f1': f1,
-                    'results': results
-                }
-                
-                # Generate visualizations
-                print("\n" + "="*70)
-                print("GENERATING VISUALIZATIONS")
-                print("="*70)
+            try:
                 visualizer = DetectionVisualizer()
                 visualizer.visualize_performance_metrics(metrics_data)
                 visualizer.visualize_anomaly_scores(detection_results)
@@ -498,9 +465,12 @@ class KeyloggerDetector:
                 
                 print("\n✓ All visualizations generated successfully!")
                 print(f"📁 Output directory: {visualizer.output_dir}\n")
-                
-                return metrics_data
+            except Exception as e:
+                print(f"[WARNING] Visualization error: {e}")
             
+            return metrics_data
+        else:
+            print("❌ No results to evaluate")
             return None
 
 

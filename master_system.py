@@ -8,6 +8,8 @@ import sys
 import json
 import platform
 from datetime import datetime
+import time
+import psutil
 
 # Add these helper functions here
 import subprocess
@@ -264,14 +266,16 @@ class KeyloggerResearchSystem:
         for log_file in log_files:
             detector.detect_from_file(log_file)
     
-    def real_time_monitoring(self):
-        """Run real-time monitoring"""
+    def real_time_monitor(self):
+        """Monitor system in real-time for keylogger behavior"""
         print("\n--- REAL-TIME MONITORING ---")
+        duration = input("Enter monitoring duration in seconds [default: 60]: ")
+        duration = int(duration) if duration.strip() else 60
         
         from detection_system import KeyloggerDetector
         detector = KeyloggerDetector(self.baseline_file)
         
-        # Load trained model
+        # Load trained model if available
         try:
             import pickle
             with open(f"{self.results_dir}/detector_model.pkl", 'rb') as f:
@@ -279,15 +283,14 @@ class KeyloggerResearchSystem:
                 detector.model = saved['model']
                 detector.scaler = saved['scaler']
                 detector.baseline_stats = saved['baseline_stats']
+                print("[✓] Loaded trained model")
         except:
-            print("No trained model found. Training now...")
+            print("[INFO] No trained model found. Training now...")
             detector.train_model()
         
-        duration = input("Enter monitoring duration in seconds [default: 60]: ")
-        duration = int(duration) if duration.strip() else 60
-        
+        # Start real-time monitoring
         detector.real_time_monitor(duration_seconds=duration, check_interval=5)
-    
+            
     def full_evaluation(self):
         """Complete performance evaluation"""
         print("\n--- FULL PERFORMANCE EVALUATION ---")
@@ -373,7 +376,7 @@ class KeyloggerResearchSystem:
             elif choice == '8':
                 self.detect_from_files()
             elif choice == '9':
-                self.real_time_monitoring()
+                self.real_time_monitor()  # CHANGED: was real_time_monitoring()
             elif choice == '10':
                 self.full_evaluation()
             elif choice == '11':
